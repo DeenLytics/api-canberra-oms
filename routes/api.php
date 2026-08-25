@@ -29,10 +29,14 @@ use App\Http\Controllers\Api\V1\{
 
 use App\Http\Controllers\{
     SiteSettingController,
+    HealthController,
 };
 
 // API Version 1 routes
 Route::prefix('v1')->group(function () {
+
+    // Liveness — no database, no auth. Says only that the app booted.
+    Route::get('/health', HealthController::class);
 
     Route::get('/site-setting', [SiteSettingController::class, 'isSuspended']);
 

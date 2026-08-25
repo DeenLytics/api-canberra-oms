@@ -109,10 +109,19 @@ cache survives a deploy and silently serves the old values.
 
 ## Smoke test
 
-The final step calls `GET /api/v1/site-setting` and fails the run on anything
-other than 200. That endpoint is unauthenticated and is what the admin and SR
-apps use for their suspend check, so it exercises routing, config and the
-database in one request.
+The final step calls two endpoints in order, so a failure names the layer that
+broke rather than just saying the API is down:
+
+| Endpoint | What a 200 proves |
+|---|---|
+| `/api/v1/health` | The framework booted and routing works. Touches nothing else. |
+| `/api/v1/site-setting` | Config and the database are also reachable. |
+
+Health passing while site-setting fails points at the database or config, not
+at the deploy itself. Both are unauthenticated.
+
+`/health` is a plain controller, not a closure — `php artisan route:cache`
+cannot serialize closures, and this workflow runs it on every deploy.
 
 ## First run — do this manually
 

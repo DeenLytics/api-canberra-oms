@@ -130,8 +130,16 @@ jobs:
              sudo -u ${{ env.OWNER }} php artisan storage:link 2>/dev/null || true
              sudo -u ${{ env.OWNER }} php artisan --version"
 
+      # Two checks, in order, so a failure names the layer that broke:
+      # /health boots the framework and nothing else; /site-setting additionally
+      # reads the database. Health passing while site-setting fails points at
+      # the database or config, not at the deploy.
       - name: Smoke test
         run: |
-          code=$(curl -s -o /dev/null -w '%{http_code}' https://canberra-api.deenlytics.com/api/v1/site-setting)
-          echo "GET /api/v1/site-setting -> $code"
-          [ "$code" = "200" ] || { echo "::error::API did not return 200 after deploy"; exit 1; }
+          base=https://canberra-api.deenlytics.com/api/v1
+          h=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$base/health")
+          echo "GET /health       -> $h"
+          [ "$h" = "200" ] || { echo "::error::app did not boot after deploy (/health returned $h)"; exit 1; }
+          s=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$base/site-setting")
+          echo "GET /site-setting -> $s"
+          [ "$s" = "200" ] || { echo "::error::app booted but /site-setting returned $s — check database and config"; exit 1; }
