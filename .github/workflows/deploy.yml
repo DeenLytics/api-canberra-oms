@@ -1,0 +1,105 @@
+name: Deploy API
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      run_migrations:
+        description: 'Run php artisan migrate --force on the server'
+        type: boolean
+        default: false
+
+concurrency:
+  group: deploy-api
+  cancel-in-progress: false
+
+env:
+  REMOTE_PATH: /home/canberra-api/public_html
+  PHP_VERSION: '8.2'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: mbstring, bcmath, pdo_mysql, gd, zip
+          coverage: none
+
+      # Vendor is built here so the cPanel box never runs composer.
+      - name: Install PHP dependencies
+        run: composer install --no-dev --optimize-autoloader --no-interaction --prefer-dist
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Build frontend assets
+        run: |
+          npm ci
+          npm run build
+
+      # rsync excludes are the safety-critical part of this file.
+      #
+      #   .env               server-owned; holds DB and mail credentials
+      #   storage/           app/public/products is 210 uploaded product images.
+      #                      This is USER DATA and exists nowhere else — not in
+      #                      Git, not in this artifact. --delete without this
+      #                      exclude would erase every product photo.
+      #   public/storage     `php artisan storage:link` symlink into storage/
+      #   bootstrap/cache    regenerated below
+      #   .htaccess          cPanel rewrites the PHP handler block; leave the
+      #                      server's copy authoritative
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          echo "${{ secrets.SSH_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Deploy
+        run: |
+          rsync -az --delete \
+            --exclude='.git/' \
+            --exclude='.github/' \
+            --exclude='.env' \
+            --exclude='storage/' \
+            --exclude='public/storage' \
+            --exclude='bootstrap/cache/' \
+            --exclude='.htaccess' \
+            --exclude='node_modules/' \
+            -e "ssh -p ${{ secrets.SSH_PORT || 22 }}" \
+            ./ \
+            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${{ env.REMOTE_PATH }}/
+
+      - name: Migrate
+        if: github.event_name == 'workflow_dispatch' && inputs.run_migrations
+        run: |
+          ssh -p ${{ secrets.SSH_PORT || 22 }} \
+            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
+            "cd ${{ env.REMOTE_PATH }} && php artisan migrate --force"
+
+      # Rebuild caches against the server's own .env. Clear first — a stale
+      # config cache survives a deploy and silently serves old values.
+      - name: Rebuild caches
+        run: |
+          ssh -p ${{ secrets.SSH_PORT || 22 }} \
+            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
+            "cd ${{ env.REMOTE_PATH }} && \
+             php artisan optimize:clear && \
+             php artisan config:cache && \
+             php artisan route:cache && \
+             php artisan view:cache && \
+             php artisan storage:link 2>/dev/null || true"
+
+      - name: Smoke test
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' https://canberra-api.deenlytics.com/api/v1/site-setting)
+          echo "GET /api/v1/site-setting -> $code"
+          [ "$code" = "200" ] || { echo "::error::API did not return 200 after deploy"; exit 1; }
