@@ -67,13 +67,12 @@ jobs:
 
       # This box also runs unrelated apps. Confirm the target exists before
       # --delete runs anywhere.
+      # Every remote call below is a single bare word. The deploy key is forced
+      # to a wrapper that accepts only these words for only this app — see
+      # ops/ISOLATION.md. It cannot open a shell or reach another app.
       - name: Preflight — confirm target
         run: |
-          ssh -p ${{ secrets.SSH_PORT || 22 }} \
-            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
-            "test -f ${{ env.REMOTE_PATH }}/artisan || { echo 'not a Laravel root: ${{ env.REMOTE_PATH }}'; exit 1; }
-             test -d ${{ env.REMOTE_PATH }}/storage/app/public/products || echo 'WARNING: product image dir not found'
-             echo 'target ok'"
+          ssh -p ${{ secrets.SSH_PORT || 22 }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} preflight
           # vendor/ is NOT excluded from --delete: CI builds it and ships it, so
           # the server never runs composer. That makes an incomplete vendor a
           # site-down event rather than a slow build. Refuse to rsync one.
@@ -97,14 +96,12 @@ jobs:
             --exclude='node_modules/' \
             -e "ssh -p ${{ secrets.SSH_PORT || 22 }}" \
             ./ \
-            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${{ env.REMOTE_PATH }}/
+            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:.
 
       - name: Migrate
         if: github.event_name == 'workflow_dispatch' && inputs.run_migrations
         run: |
-          ssh -p ${{ secrets.SSH_PORT || 22 }} \
-            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
-            "cd ${{ env.REMOTE_PATH }} && php artisan migrate --force"
+          ssh -p ${{ secrets.SSH_PORT || 22 }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} migrate
 
       # Ownership first, then caches.
       #
@@ -117,18 +114,7 @@ jobs:
       # outright is the only thing that works from a broken state.
       - name: Fix ownership and rebuild caches
         run: |
-          ssh -p ${{ secrets.SSH_PORT || 22 }} \
-            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
-            "set -e
-             cd ${{ env.REMOTE_PATH }}
-             chown -R ${{ env.OWNER }}:${{ env.OWNER }} ${{ env.REMOTE_PATH }}
-             rm -f bootstrap/cache/packages.php bootstrap/cache/services.php bootstrap/cache/config.php bootstrap/cache/routes-*.php
-             sudo -u ${{ env.OWNER }} php artisan package:discover
-             sudo -u ${{ env.OWNER }} php artisan config:cache
-             sudo -u ${{ env.OWNER }} php artisan route:cache
-             sudo -u ${{ env.OWNER }} php artisan view:cache
-             sudo -u ${{ env.OWNER }} php artisan storage:link 2>/dev/null || true
-             sudo -u ${{ env.OWNER }} php artisan --version"
+          ssh -p ${{ secrets.SSH_PORT || 22 }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} postdeploy
 
       # Two checks, in order, so a failure names the layer that broke:
       # /health boots the framework and nothing else; /site-setting additionally
