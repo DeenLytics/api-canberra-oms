@@ -22,3 +22,6 @@
 Homestead.json
 Homestead.yaml
 Thumbs.db
+
+# Regenerated on every request (L5_SWAGGER_GENERATE_ALWAYS=true)
+/storage/api-docs/api-docs.json
