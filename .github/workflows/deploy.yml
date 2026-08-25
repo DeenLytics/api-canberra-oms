@@ -70,6 +70,13 @@ jobs:
             "test -f ${{ env.REMOTE_PATH }}/artisan || { echo 'not a Laravel root: ${{ env.REMOTE_PATH }}'; exit 1; }
              test -d ${{ env.REMOTE_PATH }}/storage/app/public/products || echo 'WARNING: product image dir not found'
              echo 'target ok'"
+          # vendor/ is NOT excluded from --delete: CI builds it and ships it, so
+          # the server never runs composer. That makes an incomplete vendor a
+          # site-down event rather than a slow build. Refuse to rsync one.
+          test -f vendor/autoload.php || { echo "::error::vendor/autoload.php missing — composer step did not produce a usable vendor"; exit 1; }
+          n=$(find vendor -type f -name '*.php' | wc -l)
+          echo "vendor: $n php files"
+          [ "$n" -gt 1000 ] || { echo "::error::vendor looks truncated ($n php files) — refusing to rsync with --delete"; exit 1; }
 
       - name: Deploy
         run: |
