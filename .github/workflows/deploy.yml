@@ -16,6 +16,10 @@ concurrency:
 
 env:
   REMOTE_PATH: /home/canberra-api/public_html
+  # PHP-FPM serves this site from a per-user pool
+  # (/etc/php/8.2/fpm/pool.d/…), so every file must be readable by this user.
+  # rsync as root would otherwise stamp the runner's uid onto the tree.
+  OWNER: canberra-api
   PHP_VERSION: '8.2'
 
 jobs:
@@ -81,6 +85,7 @@ jobs:
       - name: Deploy
         run: |
           rsync -az --delete \
+            --no-owner --no-group \
             --exclude='.git/' \
             --exclude='.github/' \
             --exclude='.env' \
@@ -101,18 +106,29 @@ jobs:
             ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
             "cd ${{ env.REMOTE_PATH }} && php artisan migrate --force"
 
-      # Rebuild caches against the server's own .env. Clear first — a stale
-      # config cache survives a deploy and silently serves old values.
-      - name: Rebuild caches
+      # Ownership first, then caches.
+      #
+      # bootstrap/cache is excluded from rsync so the runner's copy never
+      # ships — but the server's own copy must be DELETED, not merely
+      # regenerated. CI builds vendor with --no-dev, and a packages.php written
+      # back when composer ran with dev dependencies still registers
+      # Laravel\Pail's service provider. The app then cannot boot at all, which
+      # means `artisan optimize:clear` cannot run either. Deleting the files
+      # outright is the only thing that works from a broken state.
+      - name: Fix ownership and rebuild caches
         run: |
           ssh -p ${{ secrets.SSH_PORT || 22 }} \
             ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
-            "cd ${{ env.REMOTE_PATH }} && \
-             php artisan optimize:clear && \
-             php artisan config:cache && \
-             php artisan route:cache && \
-             php artisan view:cache && \
-             php artisan storage:link 2>/dev/null || true"
+            "set -e
+             cd ${{ env.REMOTE_PATH }}
+             chown -R ${{ env.OWNER }}:${{ env.OWNER }} ${{ env.REMOTE_PATH }}
+             rm -f bootstrap/cache/packages.php bootstrap/cache/services.php bootstrap/cache/config.php bootstrap/cache/routes-*.php
+             sudo -u ${{ env.OWNER }} php artisan package:discover
+             sudo -u ${{ env.OWNER }} php artisan config:cache
+             sudo -u ${{ env.OWNER }} php artisan route:cache
+             sudo -u ${{ env.OWNER }} php artisan view:cache
+             sudo -u ${{ env.OWNER }} php artisan storage:link 2>/dev/null || true
+             sudo -u ${{ env.OWNER }} php artisan --version"
 
       - name: Smoke test
         run: |
