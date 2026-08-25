@@ -8,7 +8,9 @@ Workflow: [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)
 | | |
 |---|---|
 | Server path | `/home/canberra-api/public_html` |
-| Served by | Apache/LiteSpeed, PHP 8.2 |
+| Server | `62.72.47.10` |
+| Web PHP | `ea-php82`, pinned by the root `.htaccess` |
+| CLI PHP | 8.3.32 — what `php artisan` runs as |
 | Trigger | push to `main`, or **Run workflow** in the Actions tab |
 
 ## Required repository secrets
@@ -23,6 +25,14 @@ Workflow: [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)
 
 No application secrets are needed here. The server's own `.env` stays on the
 server and is never overwritten — see the excludes below.
+
+Run `./setup-secrets.sh` from the parent working folder to set the SSH secrets
+for all three repos at once.
+
+CI installs vendor against PHP 8.2 deliberately: that is what serves web
+requests, and it is the stricter of the two versions on the box. `composer.json`
+declares `"php": "^8.2"`, so the resulting `platform_check.php` is satisfied by
+both the 8.2 web runtime and the 8.3 CLI.
 
 ## What is deliberately NOT deployed
 
