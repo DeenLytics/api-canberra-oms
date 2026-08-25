@@ -34,15 +34,13 @@ jobs:
       - name: Install PHP dependencies
         run: composer install --no-dev --optimize-autoloader --no-interaction --prefer-dist
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: npm
-
-      - name: Build frontend assets
-        run: |
-          npm ci
-          npm run build
+      # No Node step here on purpose. package.json exists but carries only vite
+      # and tailwind as devDependencies, there is no lockfile, and production
+      # has never had node_modules or public/build — verified on the server.
+      # This is an API; the sole @vite reference is in Laravel's default
+      # welcome.blade.php. Building assets here added a failure mode and
+      # nothing else: setup-node with `cache: npm` cannot resolve a lockfile
+      # that does not exist, which is exactly how the first run died.
 
       # rsync excludes are the safety-critical part of this file.
       #
@@ -82,6 +80,7 @@ jobs:
             --exclude='storage/' \
             --exclude='public/storage' \
             --exclude='bootstrap/cache/' \
+            --exclude='public/build' \
             --exclude='.htaccess' \
             --exclude='node_modules/' \
             -e "ssh -p ${{ secrets.SSH_PORT || 22 }}" \

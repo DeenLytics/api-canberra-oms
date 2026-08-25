@@ -1,7 +1,14 @@
 # Deployment
 
 Pushing to `main` builds on GitHub Actions and rsyncs the result to the VPS.
-Composer and Vite run on the runner, never on the cPanel box.
+Composer runs on the runner, never on the cPanel box.
+
+There is no frontend build step. `package.json` carries only vite and tailwind
+as devDependencies, there is no lockfile, and production has never had
+`node_modules` or `public/build` — verified on the server. This is an API; the
+only `@vite` reference is in Laravel's default `welcome.blade.php`. `rsync`
+excludes `public/build` anyway, so adding a build later will not be undone by
+`--delete`.
 
 Workflow: [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)
 
