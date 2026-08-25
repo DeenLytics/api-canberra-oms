@@ -63,6 +63,16 @@ jobs:
           echo "${{ secrets.SSH_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
+      # This box also runs unrelated apps. Confirm the target exists before
+      # --delete runs anywhere.
+      - name: Preflight — confirm target
+        run: |
+          ssh -p ${{ secrets.SSH_PORT || 22 }} \
+            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
+            "test -f ${{ env.REMOTE_PATH }}/artisan || { echo 'not a Laravel root: ${{ env.REMOTE_PATH }}'; exit 1; }
+             test -d ${{ env.REMOTE_PATH }}/storage/app/public/products || echo 'WARNING: product image dir not found'
+             echo 'target ok'"
+
       - name: Deploy
         run: |
           rsync -az --delete \
