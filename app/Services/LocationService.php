@@ -174,7 +174,11 @@ class LocationService
         $activities = $this->buildAreaActivities($points) ?? [];
 
         // online status
-        $isOnline = Carbon::now()->diffInMinutes($lastSeen) < self::OFFLINE_THRESHOLD_MINUTES;
+        // Carbon 3 returns a SIGNED diff, so now()->diffInMinutes(past) is
+        // negative — and a negative is always under the threshold, which meant
+        // every rep read as online no matter how stale their last point was.
+        // Measuring forward from the older timestamp gives a positive age.
+        $isOnline = $lastSeen->diffInMinutes(Carbon::now()) < self::OFFLINE_THRESHOLD_MINUTES;
 
         return LocationSession::updateOrCreate(
             [
@@ -288,7 +292,8 @@ class LocationService
                 ];
             }
 
-            $isOnline = Carbon::now()->diffInMinutes($lastPoint->recorded_at)
+            // Same signed-diff trap as above: this reported every rep online.
+            $isOnline = $lastPoint->recorded_at->diffInMinutes(Carbon::now())
                 < self::OFFLINE_THRESHOLD_MINUTES;
 
             return [

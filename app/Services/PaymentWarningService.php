@@ -51,7 +51,12 @@ class PaymentWarningService
                     [
                         'customer_id'  => $order->customer_id,
                         'sales_rep_id'  => $order->sales_rep_id,
-                        'days_overdue' => Carbon::now()->diffInDays($order->updated_at),
+                        // Carbon 3 returns a signed float from diffInDays, so
+                        // now()->diffInDays(past) is negative — the warnings table
+                        // was storing values like -21.5 and the panel rendered
+                        // "-21.50d overdue". Measure forward from the older date
+                        // and round to whole days.
+                        'days_overdue' => (int) round($order->updated_at->diffInDays(Carbon::now())),
                         'order_total'  => $order->total,
                         'paid_amount'  => 0,
                         'due_amount'   => $order->total,
@@ -83,7 +88,7 @@ class PaymentWarningService
                     ->first();
 
                 $daysOverdue = $lastPayment
-                    ? Carbon::now()->diffInDays($lastPayment->created_at)
+                    ? (int) round($lastPayment->created_at->diffInDays(Carbon::now()))
                     : 30;
 
                 PaymentWarning::updateOrCreate(

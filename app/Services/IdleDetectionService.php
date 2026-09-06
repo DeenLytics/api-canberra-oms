@@ -55,7 +55,8 @@ class IdleDetectionService
         if ($existingIdle) {
             // Duration আপডেট করো
             $existingIdle->update([
-                'duration_minutes' => Carbon::now()->diffInMinutes($existingIdle->start_time),
+                // Signed diff under Carbon 3 stored negative durations.
+                'duration_minutes' => (int) round($existingIdle->start_time->diffInMinutes(Carbon::now())),
             ]);
             return; // Already notified
         }
@@ -70,7 +71,7 @@ class IdleDetectionService
             $lastOrderTime = Carbon::today()->setHour(self::ACTIVE_HOURS_START);
         }
 
-        $minutesSinceLastOrder = Carbon::now()->diffInMinutes($lastOrderTime);
+        $minutesSinceLastOrder = (int) round($lastOrderTime->diffInMinutes(Carbon::now()));
 
         // if ($minutesSinceLastOrder >= self::IDLE_THRESHOLD_MINUTES) {
             // Idle event তৈরি করো
@@ -104,7 +105,7 @@ class IdleDetectionService
         return [
             'isIdle'          => true,
             'idleSince'       => $unresolvedIdle->start_time->toIso8601String(),
-            'durationMinutes' => Carbon::now()->diffInMinutes($unresolvedIdle->start_time),
+            'durationMinutes' => (int) round($unresolvedIdle->start_time->diffInMinutes(Carbon::now())),
         ];
     }
 
@@ -122,7 +123,7 @@ class IdleDetectionService
 
         $idleEvent->update([
             'resolved_time'    => Carbon::now(),
-            'duration_minutes' => Carbon::now()->diffInMinutes($idleEvent->start_time),
+            'duration_minutes' => (int) round($idleEvent->start_time->diffInMinutes(Carbon::now())),
             'reason_type'      => $data['reasonType'],
             'reason_note'      => $data['reasonNote'] ?? null,
             'is_resolved'      => true,
