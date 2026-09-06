@@ -26,8 +26,11 @@ class LocationTrackController extends Controller
             'points.*.accuracy'            => 'nullable|numeric',
             'points.*.speed'               => 'nullable|numeric',
             'points.*.heading'             => 'nullable|numeric',
-            'points.*.battery_level'       => 'nullable|integer|between:0,100',
-            'points.*.battery_charging'    => 'nullable|boolean',
+            // The app sends batteryLevel/batteryCharging; these rules named the
+            // snake_case keys, so they validated fields that never arrive and
+            // the real ones went through unchecked.
+            'points.*.batteryLevel'        => 'nullable|integer|between:0,100',
+            'points.*.batteryCharging'     => 'nullable|boolean',
             'points.*.timestamp'           => 'required|date',
         ]);
 

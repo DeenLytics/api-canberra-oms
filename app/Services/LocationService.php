@@ -28,38 +28,89 @@ class LocationService
      */
     public function saveBatch(int $salesRepId, array $points): int
     {
-        $saved = 0;
+        if (empty($points)) return 0;
 
-        foreach ($points as $point) {
-            // Duplicate check — একই timestamp এর point দুবার save হবে না
-            $exists = LocationPoint::where('sales_rep_id', $salesRepId)
-                ->where('recorded_at', Carbon::parse($point['timestamp']))
-                ->exists();
+        // Order matters below: the geocode decision looks at the previous point.
+        usort($points, fn ($a, $b) => strcmp($a['timestamp'], $b['timestamp']));
 
-            if ($exists) continue;
+        $stamps = array_map(fn ($p) => Carbon::parse($p['timestamp']), $points);
 
-            LocationPoint::create([
-                'sales_rep_id'    => $salesRepId,
-                'latitude'        => $point['latitude'],
-                'longitude'       => $point['longitude'],
-                'accuracy'        => $point['accuracy'] ?? null,
-                'speed'           => $point['speed'] ?? null,
-                'heading'         => $point['heading'] ?? null,
-                'battery_level'   => $point['batteryLevel'] ?? null,
-                'battery_charging'=> $point['batteryCharging'] ?? null,
-                'area'            => $this->reverseGeocode($point['latitude'], $point['longitude']),
-                'recorded_at'     => Carbon::parse($point['timestamp']),
-            ]);
+        // One query for the whole batch. This used to be a SELECT per point —
+        // up to a hundred round trips before a single row was written, every
+        // five minutes, for every rep on the road.
+        $existing = LocationPoint::where('sales_rep_id', $salesRepId)
+            ->whereBetween('recorded_at', [min($stamps), max($stamps)])
+            ->pluck('recorded_at')
+            ->map(fn ($t) => $t->toDateTimeString())
+            ->flip();
 
-            $saved++;
+        // The last point already stored decides whether the first new one has
+        // moved far enough to be worth naming.
+        $anchor = LocationPoint::where('sales_rep_id', $salesRepId)
+            ->latest('recorded_at')
+            ->first(['latitude', 'longitude', 'area']);
+
+        $lastLat  = $anchor?->latitude !== null ? (float) $anchor->latitude : null;
+        $lastLng  = $anchor?->longitude !== null ? (float) $anchor->longitude : null;
+        $lastArea = $anchor?->area;
+
+        $rows = [];
+        $now  = Carbon::now();
+
+        foreach ($points as $i => $point) {
+            $recordedAt = $stamps[$i];
+            if ($existing->has($recordedAt->toDateTimeString())) continue;
+
+            $lat = (float) $point['latitude'];
+            $lng = (float) $point['longitude'];
+
+            // Reverse geocoding was run for every single point. A rep on the
+            // road produces roughly a thousand points a day, and each new
+            // ~111m cell is a billable Google call. AREA_CHANGE_METERS was
+            // declared for exactly this and never used: a point within 200m of
+            // the last one is in the same area by definition, so it inherits
+            // the name instead of asking again.
+            if ($lastLat === null || $this->metresBetween($lastLat, $lastLng, $lat, $lng) >= self::AREA_CHANGE_METERS) {
+                $lastArea = $this->reverseGeocode($lat, $lng);
+                $lastLat  = $lat;
+                $lastLng  = $lng;
+            }
+
+            $rows[] = [
+                'sales_rep_id'     => $salesRepId,
+                'latitude'         => $lat,
+                'longitude'        => $lng,
+                'accuracy'         => $point['accuracy'] ?? null,
+                'speed'            => $point['speed'] ?? null,
+                'heading'          => $point['heading'] ?? null,
+                'battery_level'    => $point['batteryLevel'] ?? null,
+                'battery_charging' => $point['batteryCharging'] ?? null,
+                'area'             => $lastArea,
+                'recorded_at'      => $recordedAt,
+                'created_at'       => $now,
+                'updated_at'       => $now,
+            ];
         }
 
-        // Session আপডেট করো
-        if ($saved > 0) {
-            $this->updateSession($salesRepId, Carbon::today());
-        }
+        if (empty($rows)) return 0;
 
-        return $saved;
+        // One insert rather than one per point.
+        LocationPoint::insert($rows);
+
+        $this->updateSession($salesRepId, Carbon::today());
+
+        return count($rows);
+    }
+
+    /** Haversine, in metres. */
+    private function metresBetween(float $lat1, float $lng1, float $lat2, float $lng2): float
+    {
+        $r = 6_371_000;
+        $dLat = deg2rad($lat2 - $lat1);
+        $dLng = deg2rad($lng2 - $lng1);
+        $a = sin($dLat / 2) ** 2
+           + cos(deg2rad($lat1)) * cos(deg2rad($lat2)) * sin($dLng / 2) ** 2;
+        return $r * 2 * atan2(sqrt($a), sqrt(1 - $a));
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -209,7 +260,15 @@ class LocationService
         for ($i = 1; $i < $points->count(); $i++) {
             $prev = $points[$i - 1]->recorded_at;
             $curr = $points[$i]->recorded_at;
-            $gap  = $curr->diffInMinutes($prev);
+
+            // Carbon 3 returns a SIGNED diff. $curr is the later of the two, so
+            // $curr->diffInMinutes($prev) was negative — every gap then passed
+            // the "<= 10 minutes" test and was added to $activeMinutes as a
+            // negative number, which the caller clamped back to 0 with max().
+            // The result: total_active_minutes and total_inactive_minutes were
+            // zero for every session ever recorded, which is the whole of the
+            // location report's "Active" column.
+            $gap = $prev->diffInMinutes($curr);
 
             if ($gap <= self::INACTIVE_THRESHOLD_MINUTES) {
                 $activeMinutes += $gap;
@@ -239,7 +298,8 @@ class LocationService
                         'area'              => $currentArea,
                         'arrived_at'        => $arrivedAt->toIso8601String(),
                         'left_at'           => $point->recorded_at->toIso8601String(),
-                        'duration_minutes'  => $point->recorded_at->diffInMinutes($arrivedAt),
+                        // Signed diff again: measured from the arrival, not back to it.
+                        'duration_minutes'  => $arrivedAt->diffInMinutes($point->recorded_at),
                     ];
                 }
                 $currentArea = $point->area;
@@ -318,8 +378,11 @@ class LocationService
 
     public function getPath(int $salesRepId, string $date): array
     {
+        // The date filter was commented out, so asking for one rep's path on one
+        // day returned every point they had ever recorded — the map drew months
+        // of history as a single track, and the payload grew without bound.
         return LocationPoint::where('sales_rep_id', $salesRepId)
-            // ->whereDate('recorded_at', $date)
+            ->whereDate('recorded_at', $date)
             ->orderBy('recorded_at')
             ->get(['latitude', 'longitude', 'recorded_at', 'area', 'battery_level'])
             ->toArray();
@@ -344,7 +407,9 @@ class LocationService
                 'salesRepName'         => $session->salesRep?->full_name,
                 'date'                   => $session->date->toDateString(),
                 'startTime'             => $session->start_time?->toIso8601String(),
-                'end_time'               => $session->end_time?->toIso8601String(),
+                // Every other key here is camelCase and the admin reads endTime,
+                // so the End column in the location report was always blank.
+                'endTime'                => $session->end_time?->toIso8601String(),
                 'totalActiveMinutes'   => $session->total_active_minutes,
                 'totalInactiveMinutes' => $session->total_inactive_minutes,
                 'lastSeen'              => $session->last_seen?->toIso8601String(),
@@ -386,7 +451,9 @@ class LocationService
                 ->first();
 
             $isOffline = !$lastPoint
-                || $now->diffInMinutes($lastPoint->recorded_at) >= self::OFFLINE_THRESHOLD_MINUTES;
+                // Signed diff: $now->diffInMinutes($past) is negative, so this was
+                // never >= 15 and no offline alert has ever been raised.
+                || $lastPoint->recorded_at->diffInMinutes($now) >= self::OFFLINE_THRESHOLD_MINUTES;
 
             if ($isOffline) {
                 // Admin দের notify করো
