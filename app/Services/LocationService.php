@@ -123,6 +123,18 @@ class LocationService
      */
     public function reverseGeocode(float $lat, float $lng): ?string
     {
+        // Fail loudly-once rather than quietly-forever. With no key this method
+        // returned null on every call, so every point was stored without an
+        // area and the admin's area timeline was permanently empty — with
+        // nothing anywhere saying why.
+        if (! config('services.google_maps.api_key')) {
+            Cache::remember('geocode:missing-key-warned', now()->addHour(), function () {
+                Log::warning('GOOGLE_MAPS_SERVER_KEY is not set — location points will be stored without an area name, and the location report will show no areas.');
+                return true;
+            });
+            return null;
+        }
+
         // Round করে cache key তৈরি — 3 decimal = ~111m accuracy
         $cacheKey = 'geocode:' . round($lat, 3) . ':' . round($lng, 3);
 
@@ -416,7 +428,20 @@ class LocationService
                 'isOnline'              => $session->is_online,
                 'batteryLevel'          => $session->battery_level,
                 'batteryCharging'       => $session->battery_charging,
-                'activities'             => $session->activities ?? [],
+                // Activities are written into a JSON column as arrived_at /
+                // left_at / duration_minutes, and the admin reads arrivedAt /
+                // leftAt / durationMinutes — so every time in the area timeline
+                // rendered as "—" and no duration ever showed. Mapped on read
+                // rather than on write, so rows already stored keep working.
+                'activities'             => collect($session->activities ?? [])
+                    ->map(fn ($a) => [
+                        'area'            => $a['area'] ?? null,
+                        'arrivedAt'       => $a['arrivedAt']       ?? $a['arrived_at']       ?? null,
+                        'leftAt'          => $a['leftAt']          ?? $a['left_at']          ?? null,
+                        'durationMinutes' => $a['durationMinutes'] ?? $a['duration_minutes'] ?? null,
+                    ])
+                    ->values()
+                    ->all(),
             ];
         })->toArray();
     }

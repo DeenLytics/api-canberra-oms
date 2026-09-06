@@ -35,4 +35,21 @@ return [
         ],
     ],
 
+    /*
+     * LocationService reads config('services.google_maps.api_key') to turn a
+     * GPS fix into an area name. There was no google_maps entry here at all, so
+     * that call returned null no matter what the environment held — every point
+     * has been stored with area = null, buildAreaActivities() has always
+     * produced an empty array, and the area timeline in the admin's location
+     * report has never had anything to show.
+     *
+     * This must be a SERVER key, not the NEXT_PUBLIC_GOOGLE_MAPS_API_KEY the
+     * admin panel ships to the browser: that one belongs in a referrer
+     * restriction, which a server-side call can never satisfy. Restrict this
+     * one to the VPS's IP and to the Geocoding API.
+     */
+    'google_maps' => [
+        'api_key' => env('GOOGLE_MAPS_SERVER_KEY'),
+    ],
+
 ];
