@@ -181,16 +181,19 @@
         <!-- Customer Info -->
         <table class="no-border mt-3">
             <tr>
-                <td class="fw-bold text-success" width="25%">Customer Name:</td>
-                <td>{{ $order->customer->name}}</td>
+                {{-- customers.name holds the OUTLET and customers.shop_name the
+                     CONTACT PERSON; this row said "Customer Name" over the outlet
+                     and the row below said "Outlet" over the person. --}}
+                <td class="fw-bold text-success" width="25%">Outlet:</td>
+                <td>{{ $order->customer->name }}</td>
             </tr>
             <tr>
                 <td class="fw-bold text-success" width="25%">Customer Mobile:</td>
                 <td>{{ $order->customer->mobile_number}}</td>
             </tr>
             <tr>
-                <td class="fw-bold text-success">Outlet:</td>
-                <td>{{ $order->customer->shop_name}}</td>
+                <td class="fw-bold text-success">Contact:</td>
+                <td>{{ $order->customer->shop_name }}</td>
             </tr>
             <tr>
                 <td class="fw-bold text-success">Address:</td>
