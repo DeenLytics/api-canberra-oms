@@ -381,9 +381,19 @@ class OrderController extends Controller
             ->when($request->status === 'paymentPaid', fn ($q) => $q->where('payment_status', 'paid'))
             ->when($request->status === 'paymentPartial', fn ($q) => $q->where('payment_status', 'partial'))
 
-            // Waiting Approval
+            // Waiting Approval — an order with a payment still awaiting sign-off.
+            //
+            // This also required payment_status = 'paid', while the counter
+            // below counts on the pending payment alone. The tab therefore
+            // promised more orders than the table delivered, and the gap was
+            // not cosmetic: every one of the missing orders was 'partial' with
+            // a real pending payment on it, so those payments could not be
+            // reached from anywhere in the panel and sat unapproved.
+            //
+            // A part-paid order whose payment is pending is waiting approval in
+            // exactly the same sense as a fully paid one, so the condition goes
+            // and the two now agree.
             ->when($request->status === 'waitingApproval', function ($q) {
-                $q->where('payment_status', 'paid');
                 $q->whereHas('payments', fn ($p) => $p->where('status', 'pending'));
             })
 
