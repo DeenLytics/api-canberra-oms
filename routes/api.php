@@ -38,6 +38,8 @@ Route::prefix('v1')->group(function () {
     // Liveness — no database, no auth. Says only that the app booted.
     Route::get('/health', HealthController::class);
 
+    // Read is public and has to be: both apps call it on every page load to
+    // decide whether to render the suspended screen, before anyone has signed in.
     Route::get('/site-setting', [SiteSettingController::class, 'isSuspended']);
 
     // Public routes
@@ -53,6 +55,13 @@ Route::prefix('v1')->group(function () {
 
     // Protected routes
     Route::middleware('auth:sanctum')->group(function () {
+
+        // Suspending the product was a GET on the PUBLIC /site-setting route:
+        // anyone who knew the URL could take both apps down, or bring them back,
+        // by visiting ?suspended=true|false in a browser. No sign-in, no role, and
+        // a GET that mutates state. Writing now needs an authenticated admin.
+        Route::post('/site-setting', [SiteSettingController::class, 'setSuspended']);
+
 
         Route::prefix('auth')->group(function () {
             Route::post('sign-out', [AuthController::class, 'signOut']);
