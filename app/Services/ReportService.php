@@ -383,13 +383,21 @@ class ReportService
     ): array {
         [$start, $end] = $this->resolveRange($startDate, $endDate, $period);
 
-        $rows = DB::table('order_items')
+        $base = fn () => DB::table('order_items')
             ->join('orders', 'orders.id', '=', 'order_items.order_id')
-            ->leftJoin('products', 'products.id', '=', 'order_items.product_id')
-            ->leftJoin('categories', 'categories.id', '=', 'products.category_id')
             ->whereBetween('orders.created_at', [$start, $end])
             ->where('orders.status', '!=', 'cancelled')
-            ->when($salesRepId, fn ($q) => $q->where('orders.sales_rep_id', $salesRepId))
+            ->when($salesRepId, fn ($q) => $q->where('orders.sales_rep_id', $salesRepId));
+
+        /* The share has to be of ALL sales in the window, not of the top N.
+         * Taken from the limited set, the leading product read 9.71% when it is
+         * 7.25% of the book — a figure that looks like a share of the business
+         * and is not. */
+        $grandTotal = (float) $base()->sum('order_items.total');
+
+        $rows = $base()
+            ->leftJoin('products', 'products.id', '=', 'order_items.product_id')
+            ->leftJoin('categories', 'categories.id', '=', 'products.category_id')
             ->selectRaw('
                 /* product_name is denormalised onto the line, so a product that
                    has since been renamed or deleted still reports under the name
@@ -405,13 +413,19 @@ class ReportService
             ->limit($limit)
             ->get();
 
-        return $this->withShare($rows, fn ($row) => [
-            'name'        => $row->group_name,
-            'category'    => $row->category_name,
-            'totalSales'  => (float) $row->totalSales,
-            'ordersCount' => (int) $row->ordersCount,
-            'unitsSold'   => (int) $row->unitsSold,
-        ]);
+        return $rows
+            ->map(fn ($row) => [
+                'name'         => $row->group_name,
+                'category'     => $row->category_name,
+                'totalSales'   => (float) $row->totalSales,
+                'ordersCount'  => (int) $row->ordersCount,
+                'unitsSold'    => (int) $row->unitsSold,
+                'revenueShare' => $grandTotal > 0
+                    ? round(((float) $row->totalSales / $grandTotal) * 100, 2)
+                    : 0,
+            ])
+            ->values()
+            ->toArray();
     }
 
     /** Each row's share of the set, so the panel does not have to total the
