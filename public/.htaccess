@@ -1,3 +1,13 @@
+<IfModule mod_mime.c>
+    # Apache here has no mapping for .webp, so uploaded product photos were
+    # served with no Content-Type at all. Browsers sniff an image and usually
+    # render it anyway, but a missing type breaks strict clients, confuses
+    # caches and proxies, and makes the response undiagnosable. Every product
+    # image in this install is .webp.
+    AddType image/webp .webp
+    AddType image/avif .avif
+</IfModule>
+
 <IfModule mod_rewrite.c>
     <IfModule mod_negotiation.c>
         Options -MultiViews -Indexes
