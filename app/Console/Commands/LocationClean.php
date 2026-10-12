@@ -27,13 +27,15 @@ use Illuminate\Support\Facades\Log;
  *   location_sessions one row per rep per day: start, end, active minutes, the
  *                     areas visited. This IS the report. Kept.
  *
- * Runs hourly, so "older than 24 hours" is a real rolling window rather than a
- * once-a-day cliff.
+ * Scheduled with --daily-reset at 05:00 Asia/Dhaka: the map an admin opens
+ * carries the working day in progress and nothing else. The rolling --hours
+ * mode is kept for running by hand.
  */
 class LocationClean extends Command
 {
     protected $signature = 'location:clean
-                            {--hours=24 : Age in hours beyond which raw points are pruned}
+                            {--daily-reset : Clear the map for a new working day — drop every point recorded before 05:00 today}
+                            {--hours=24 : Rolling mode: age in hours beyond which raw points are pruned}
                             {--session-days=90 : Age in days beyond which daily summaries are pruned}';
 
     protected $description = 'Prune raw location points older than 24 hours, keeping the daily session summaries';
@@ -45,11 +47,31 @@ class LocationClean extends Command
         DB::purge();
         DB::reconnect();
 
-        $hours       = max(1, (int) $this->option('hours'));
         $sessionDays = max(1, (int) $this->option('session-days'));
-
-        $pointCutoff   = Carbon::now()->subHours($hours);
         $sessionCutoff = Carbon::now()->subDays($sessionDays)->toDateString();
+
+        if ($this->option('daily-reset')) {
+            // A rep's day starts after dawn, so 05:00 is the natural seam: at
+            // that moment yesterday's track is finished and today's has not
+            // begun, and the map an admin opens shows only the day in progress.
+            //
+            // Carbon::today() is evaluated in config('app.timezone') —
+            // Asia/Dhaka — not the server clock, which runs on CEST. Getting
+            // that wrong would cut the day four hours early.
+            $pointCutoff = Carbon::today()->setTime(5, 0);
+
+            // Before 05:00 the seam that matters is yesterday's, otherwise the
+            // command would delete the night's points and the whole of the
+            // previous working day along with them.
+            if (Carbon::now()->lt($pointCutoff)) {
+                $pointCutoff = $pointCutoff->subDay();
+            }
+            $mode = 'daily reset at 05:00 ' . config('app.timezone');
+        } else {
+            $hours = max(1, (int) $this->option('hours'));
+            $pointCutoff = Carbon::now()->subHours($hours);
+            $mode = "rolling {$hours}h window";
+        }
 
         try {
             // Deleted in chunks rather than one statement: a single DELETE over
@@ -66,8 +88,8 @@ class LocationClean extends Command
             $sessions = LocationSession::where('date', '<', $sessionCutoff)->delete();
 
             $summary = sprintf(
-                'Pruned %d point(s) older than %dh; %d session(s) older than %dd. Sessions inside the window are kept — they are the report.',
-                $points, $hours, $sessions, $sessionDays
+                'Pruned %d point(s) before %s (%s); %d session(s) older than %dd. Sessions are kept — they are the report.',
+                $points, $pointCutoff->toDateTimeString(), $mode, $sessions, $sessionDays
             );
 
             $this->info($summary);

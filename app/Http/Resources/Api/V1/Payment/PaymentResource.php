@@ -27,6 +27,12 @@ class PaymentResource extends JsonResource
                 ? Carbon::parse($this->payment_date)->format('d M, Y')
                 : null,
             'description' => $this->description,
+            // The approval queue has to say who collected this and what
+            // reference the shop was given — without them an admin is approving
+            // a number with no provenance.
+            'ref' => $this->ref,
+            'collectedBy' => $this->whenLoaded('createdBy', fn () => $this->createdBy?->full_name),
+            'recordedAt' => $this->created_at?->toIso8601String(),
         ];
     }
 }

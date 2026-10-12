@@ -146,25 +146,81 @@ class PaymentController extends Controller
 
     }
 
+    /**
+     * Approving a payment is the one place in this system where separation of
+     * duties matters: the rep collects the cash, somebody else signs it off.
+     *
+     * There is no role middleware anywhere in this API, EditPaymentStatusRequest
+     * authorized everything, and the only guard on the route was auth:sanctum —
+     * so the sales representative who recorded a payment could mark it approved
+     * himself, from the SR app's own token. That is the whole control the
+     * "Waiting Approval" queue exists to provide.
+     */
+    private function assertMayApprove(Request $request)
+    {
+        $user = $request->user();
+
+        if (! $user || ! $user->hasAnyRole(['super_admin', 'admin'])) {
+            return ResponseHelper::error('Only an administrator can approve a payment.', 403);
+        }
+
+        return null;
+    }
+
     public function updateStatus(EditPaymentStatusRequest $request, $id){
+        if ($denied = $this->assertMayApprove($request)) return $denied;
+
         $data = $request->validated();
 
         $payment = Payment::find($id);
-        if (!$payment) return ResponseHelper::error('Order not found', 404);
+        if (!$payment) return ResponseHelper::error('Payment not found', 404);
 
         $order = Order::where('id', $payment->order_id)->first();
         if (!$order) return ResponseHelper::error('Order not found', 404);
 
         try {
-
-            if ($payment) {
-                $payment->status = $data['status'];
-                $payment->save();
-            }
+            $payment->status = $data['status'];
+            $payment->save();
 
             $order->load(['customer', 'salesRep', 'items.product:id,thumbnail']);
 
             return ResponseHelper::success(new OrderResource($order), 'Payment approved', 201);
+
+        } catch (\Exception $e) {
+            return ResponseHelper::error($e->getMessage(), 500);
+        }
+    }
+
+    /**
+     * Approve or reject several payments at once.
+     *
+     * The queue routinely holds a couple of hundred payments and the only way
+     * through it was one request per payment, ten rows to a page. That is 258
+     * clicks across 26 pages for a single day's sign-off, so the work did not
+     * get done and the queue grew.
+     */
+    public function bulkUpdateStatus(Request $request)
+    {
+        if ($denied = $this->assertMayApprove($request)) return $denied;
+
+        $data = $request->validate([
+            'ids'    => 'required|array|min:1|max:500',
+            'ids.*'  => 'integer',
+            'status' => 'required|in:pending,processing,partial,paid,failed',
+        ]);
+
+        try {
+            $updated = DB::transaction(function () use ($data) {
+                return Payment::whereIn('id', $data['ids'])->update([
+                    'status'     => $data['status'],
+                    'updated_at' => now(),
+                ]);
+            });
+
+            return ResponseHelper::success(
+                ['updated' => $updated, 'status' => $data['status']],
+                "{$updated} payment(s) updated"
+            );
 
         } catch (\Exception $e) {
             return ResponseHelper::error($e->getMessage(), 500);

@@ -159,6 +159,9 @@ Route::prefix('v1')->group(function () {
             Route::post('/', [PaymentController::class, 'store']);
             Route::get('/', [PaymentController::class, 'index']);
             Route::post('/{id}/status', [PaymentController::class, 'updateStatus']);
+            // Signing off a day's collections one request at a time meant 258
+            // clicks across 26 pages, so it did not get done.
+            Route::post('/bulk-status', [PaymentController::class, 'bulkUpdateStatus']);
         });
 
         // Payment Warnings

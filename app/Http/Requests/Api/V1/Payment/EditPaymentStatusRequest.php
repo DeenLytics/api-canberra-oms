@@ -22,7 +22,11 @@ class EditPaymentStatusRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'status'      => 'required',
+            // The column is an enum. 'required' alone let any string through to
+            // MySQL, which either rejects it with a driver error or silently
+            // truncates depending on strict mode — neither belongs on a payment.
+            'status' => 'required|in:pending,processing,partial,paid,failed',
+            'note'   => 'nullable|string|max:500',
         ];
     }
 }

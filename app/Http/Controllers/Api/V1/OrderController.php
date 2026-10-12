@@ -350,7 +350,9 @@ class OrderController extends Controller
     private function baseQuery(Request $request)
     {
         return Order::query()
-            ->with(['customer', 'salesRep', 'items.product:id,thumbnail'])
+            ->with(['customer', 'salesRep', 'items.product:id,thumbnail',
+                    // the approval queue reads who collected each payment
+                    'invoice.payments.createdBy:id,full_name'])
 
             ->when($request->search, function ($q) use ($request) {
                 $search = $request->search;

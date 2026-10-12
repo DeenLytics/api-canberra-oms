@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use App\Models\User;
 
 class Payment extends Model
 {
@@ -21,6 +22,14 @@ class Payment extends Model
         'created_by',
         'status',
     ];
+
+    /** The user who recorded this payment — the rep who collected the cash.
+     *  The approval queue shows it, and it is what makes "somebody else signs
+     *  it off" checkable. */
+    public function createdBy()
+    {
+        return $this->belongsTo(User::class, 'created_by');
+    }
 
     protected static function boot()
     {

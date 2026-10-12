@@ -37,10 +37,15 @@ Schedule::command('payment:warnings')
     ->withoutOverlapping()
     ->appendOutputTo($log('payment-warnings'));
 
-// Hourly, not daily at 23:59: the window is "raw points older than 24 hours",
-// and a once-a-day run both delayed the prune by up to a day and landed on the
-// day that had just been recorded.
-Schedule::command('location:clean')
-    ->hourly()
+// 05:00 Asia/Dhaka, not hourly: the map should carry the working day in
+// progress, so the seam belongs where the day actually starts. Before dawn
+// nothing has been recorded yet and yesterday's track is complete, which is
+// what makes 05:00 a clean cut rather than an arbitrary one.
+//
+// The timezone is stated outright. The server clock runs on CEST, so leaving it
+// implicit would schedule this four hours off.
+Schedule::command('location:clean --daily-reset')
+    ->dailyAt('05:00')
+    ->timezone('Asia/Dhaka')
     ->withoutOverlapping()
     ->appendOutputTo($log('location-clean'));
