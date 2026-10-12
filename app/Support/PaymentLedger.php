@@ -153,6 +153,13 @@ class PaymentLedger
     /** The order/invoice payment_status, derived from cash in hand. */
     public static function statusFor(float $collected, float $total): string
     {
+        // An order with no billable total owes nothing, so it is settled. The
+        // alternative reading, `pending`, puts a handful of zero-total rows on
+        // the collection screens for money that does not exist.
+        if ($total <= 0) {
+            return 'paid';
+        }
+
         if ($collected <= 0) {
             return 'pending';
         }
