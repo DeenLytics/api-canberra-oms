@@ -22,6 +22,8 @@ use App\Http\Resources\Api\V1\Order\{
     OrderResource,
 };
 
+use App\Support\PaymentLedger;
+
 use DB;
 
 class PaymentController extends Controller
@@ -62,76 +64,33 @@ class PaymentController extends Controller
             $payment = Payment::create($paymentData);
 
             if ($payment) {
-                // Total paid so far
-                $totalPaid = Payment::where('invoice_id', $invoice->id)
-                    ->sum('amount_paid');
-
-                $totalPaid = round($totalPaid, 2);
-
-                // -------------------------
-                // Calculate discount
-                // -------------------------
-                $discountAmount = Discount::where('order_id', $order->id)
-                    ->get()
-                    ->sum(function ($discount) use ($invoice) {
-                        return $discount->type === 'percentage'
-                            ? ($invoice->total * $discount->value) / 100
-                            : $discount->value;
-                    });
-
-                $discountAmount = round($discountAmount, 2);
-
-                // -------------------------
-                // Final total
-                // -------------------------
-                $finalTotal = round(max(0, $invoice->total - $discountAmount), 2);
-
-                // -------------------------
-                // Determine status (reusable logic)
-                // -------------------------
-                $status = function ($paid, $total) {
-                    if ($paid <= 0) {
-                        return 'pending';
-                    }
-
-                    if ($paid < $total) {
-                        return 'partial';
-                    }
-
-                    return 'paid';
-                };
-
-                // -------------------------
-                // Update invoice
-                // -------------------------
-                $invoice->status = $status($totalPaid, $finalTotal);
-                $invoice->save();
-
-                // -------------------------
-                // Update order
-                // -------------------------
-                $order->payment_status = $status($totalPaid, $finalTotal);
-                $order->save();
-
-
+                // The discount has to be recorded before the ledger is read,
+                // otherwise the status is derived against the undiscounted
+                // total and an order settled in full reads `partial`.
                 if (!empty($data['discountType']) && !empty($data['discountValue']) && $data['discountValue'] > 0) {
                     Discount::create([
                         "type" => $data['discountType'],
                         "value" => $data['discountValue'],
                         "order_id" => $data['orderId']
                     ]);
-                }
-            }
 
-            \Log::info('Payment Status Debug', [
-                'invoice_id' => $invoice->id,
-                'order_id' => $order->id,
-                'invoice_total' => $invoice->total,
-                'total_paid' => $totalPaid,
-                'discount_amount' => $discountAmount,
-                'final_total' => $finalTotal,
-                'difference' => round($finalTotal - $totalPaid, 6),
-            ]);
+                    $order->load('discounts');
+                }
+
+                // One source of truth — see App\Support\PaymentLedger. This
+                // used to sum every payment row regardless of `status`, so a
+                // payment the rep had only just recorded marked the order paid
+                // before any administrator had seen it, and a payment the
+                // administrator had rejected stayed counted as collected.
+                $ledger = PaymentLedger::sync($order);
+
+                \Log::info('Payment recorded', [
+                    'order_id'  => $order->id,
+                    'invoice_id'=> $invoice->id,
+                    'payment_id'=> $payment->id,
+                    'ledger'    => $ledger,
+                ]);
+            }
 
             DB::commit();
 
@@ -179,12 +138,33 @@ class PaymentController extends Controller
         if (!$order) return ResponseHelper::error('Order not found', 404);
 
         try {
-            $payment->status = $data['status'];
-            $payment->save();
+            $before = PaymentLedger::for($order);
 
-            $order->load(['customer', 'salesRep', 'items.product:id,thumbnail']);
+            DB::transaction(function () use ($payment, $data, $order) {
+                $payment->status = $data['status'];
+                $payment->save();
 
-            return ResponseHelper::success(new OrderResource($order), 'Payment approved', 201);
+                // A decision that does not reach the order's books is not a
+                // decision. This line is why Reject now means something:
+                // rejected money goes back into the due.
+                PaymentLedger::sync($order->refresh());
+            });
+
+            $order->load(['customer', 'salesRep', 'items.product:id,thumbnail', 'discounts', 'invoice.payments']);
+
+            $after = PaymentLedger::for($order);
+
+            return ResponseHelper::success(
+                [
+                    'order'  => new OrderResource($order),
+                    'before' => $before,
+                    'after'  => $after,
+                ],
+                $data['status'] === 'paid'
+                    ? ($after['fullyApproved'] ? 'Approved — this invoice is now settled in full' : 'Approved')
+                    : 'Rejected — the amount has gone back into the due',
+                201
+            );
 
         } catch (\Exception $e) {
             return ResponseHelper::error($e->getMessage(), 500);
@@ -210,16 +190,54 @@ class PaymentController extends Controller
         ]);
 
         try {
-            $updated = DB::transaction(function () use ($data) {
-                return Payment::whereIn('id', $data['ids'])->update([
+            $result = DB::transaction(function () use ($data) {
+                // Which orders the decision touches, read before the update.
+                $orderIds = Payment::whereIn('id', $data['ids'])
+                    ->distinct()
+                    ->pluck('order_id');
+
+                $updated = Payment::whereIn('id', $data['ids'])->update([
                     'status'     => $data['status'],
                     'updated_at' => now(),
                 ]);
+
+                /* Every order the batch touched has to have its books rewritten,
+                 * exactly as a single decision does. A bulk endpoint that skips
+                 * this is how a queue of 258 payments gets signed off without
+                 * one invoice changing state. */
+                $ledgers = [];
+
+                foreach (Order::whereIn('id', $orderIds)->with(['invoice', 'discounts', 'payments'])->get() as $order) {
+                    $ledger = PaymentLedger::sync($order);
+
+                    $ledgers[] = [
+                        'orderId'        => $order->order_id,
+                        'outlet'         => $order->customer?->name,
+                        'total'          => $ledger['total'],
+                        'approved'       => $ledger['approved'],
+                        'due'            => $ledger['due'],
+                        'paymentStatus'  => $ledger['paymentStatus'],
+                        'approvalStatus' => $ledger['approvalStatus'],
+                        'fullyApproved'  => $ledger['fullyApproved'],
+                    ];
+                }
+
+                return ['updated' => $updated, 'orders' => $ledgers];
             });
 
+            $settled = collect($result['orders'])->where('fullyApproved', true)->count();
+
             return ResponseHelper::success(
-                ['updated' => $updated, 'status' => $data['status']],
-                "{$updated} payment(s) updated"
+                [
+                    'updated' => $result['updated'],
+                    'status'  => $data['status'],
+                    // So the screen can report what the batch did per invoice,
+                    // not just how many rows it touched.
+                    'orders'  => $result['orders'],
+                ],
+                $data['status'] === 'paid'
+                    ? "{$result['updated']} payment(s) approved" . ($settled ? ", {$settled} invoice(s) settled in full" : '')
+                    : "{$result['updated']} payment(s) rejected — the amounts are back in the due"
             );
 
         } catch (\Exception $e) {

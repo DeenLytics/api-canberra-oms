@@ -151,7 +151,10 @@ class SalesRepresentativeController extends Controller
 
         $salesRepId = auth()->user()->id;
 
-        $orders = Order::where('sales_rep_id', $salesRepId)->with(['items', 'customer', 'items.product:id,thumbnail'])->orderBy('id', 'desc')->take($orderTake)->get() ?? [];
+        $orders = Order::where('sales_rep_id', $salesRepId)
+            // the resource computes the ledger per row — load it with the list
+            ->with(['items', 'customer', 'items.product:id,thumbnail', 'invoice', 'payments', 'discounts'])
+            ->orderBy('id', 'desc')->take($orderTake)->get() ?? [];
 
         if (!count($orders)) return ResponseHelper::error('Orders not found', 404);
 
@@ -202,7 +205,7 @@ class SalesRepresentativeController extends Controller
     {
         $salesRepId = auth()->user()->id;
         return Order::where('sales_rep_id', $salesRepId)
-        ->with(['items', 'customer', 'items.product:id,thumbnail'])
+        ->with(['items', 'customer', 'items.product:id,thumbnail', 'invoice', 'payments', 'discounts'])
         ->when($request->search, fn ($q) =>
             $q->where('order_id', 'like', "%".$request->search."%")
         )

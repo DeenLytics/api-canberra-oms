@@ -174,7 +174,7 @@ class ShippingController extends Controller
         ->when($request->status === 'cancelled', fn ($q) =>
             $q->where('status', 'cancelled')
         )
-        ->with(['customer', 'items.product:id,thumbnail'])
+        ->with(['customer', 'items.product:id,thumbnail', 'invoice', 'payments', 'discounts'])
         ->orderBy('id', 'desc');
     }
 

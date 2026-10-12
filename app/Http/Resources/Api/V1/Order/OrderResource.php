@@ -29,6 +29,7 @@ use App\Http\Resources\Api\V1\Payment\{
 
 
 
+use App\Support\PaymentLedger;
 use Carbon\Carbon;
 
 class OrderResource extends JsonResource
@@ -51,6 +52,8 @@ class OrderResource extends JsonResource
 
         $totalAfterDiscount = round(max(0, $this->total - $discountAmount + $this->tax), 2);
 
+        $ledger = PaymentLedger::for($this->resource);
+
         return [
             "id" => $this->id,
             "orderId" => $this->order_id,
@@ -72,16 +75,33 @@ class OrderResource extends JsonResource
             'date' => $this->created_at
                 ? Carbon::parse($this->created_at)->format('d M, Y h:i A')
                 : null,
-            'paidAmount' => $this->invoice
-                ? round(max(0, (float) $this->invoice->payments->sum('amount_paid') - (float) $discountAmount),2)
-                : 0,
-            // 'dueAmount' => $this->invoice
-            // ? round(max(0, (float) $this->invoice->total - (float) $this->invoice->payments->sum('amount_paid')),2)
-            // : null,
+            /* Collected and due are derived from the payment rows, not from
+             * every row's amount blindly summed.
+             *
+             * `payments->sum('amount_paid')` counted a rejected payment as
+             * money in hand, so ORD-1478 (7,911.90) and ORD-1496 (1,488.00)
+             * read paid with 0 due after an administrator had refused them,
+             * and it counted a payment the rep had only just recorded as
+             * collected before anyone had seen it. See App\Support\PaymentLedger. */
+            'paidAmount' => round(max(0, $ledger['collected'] - $discountAmount), 2),
+            'dueAmount'  => $this->invoice ? $ledger['due'] : null,
 
-            'dueAmount' => $this->invoice
-            ? round(max(0, (float) $totalAfterDiscount - (float) $this->invoice->payments->sum('amount_paid')),2)
-            : null,
+            /* The sign-off state, which is a different question from
+             * paymentStatus: an order can be collected in full and entirely
+             * unapproved. The approval screen reports against these. */
+            'ledger' => [
+                'total'          => $ledger['total'],
+                'discount'       => $ledger['discount'],
+                'approved'       => $ledger['approved'],
+                'awaiting'       => $ledger['awaiting'],
+                'rejected'       => $ledger['rejected'],
+                'collected'      => $ledger['collected'],
+                'due'            => $ledger['due'],
+                'approvedDue'    => $ledger['approvedDue'],
+                'paymentStatus'  => $ledger['paymentStatus'],
+                'approvalStatus' => $ledger['approvalStatus'],
+                'fullyApproved'  => $ledger['fullyApproved'],
+            ],
             'payments' => $this->invoice
             ? PaymentResource::collection($this->invoice->payments)
             : [],
