@@ -8,6 +8,7 @@ use App\Models\OutletVisit;
 use App\Models\QuarterlyTarget;
 use App\Models\User;
 use Carbon\Carbon;
+use App\Support\PaymentLedger;
 use Illuminate\Support\Facades\DB;
 
 class ReportService
@@ -22,13 +23,12 @@ class ReportService
         ?string $startDate = null,
         ?string $endDate = null
     ): array {
-        $start = $startDate
-            ? Carbon::parse($startDate)->startOfDay()
-            : Carbon::now()->subMonths(3)->startOfMonth();
-
-        $end = $endDate
-            ? Carbon::parse($endDate)->endOfDay()
-            : Carbon::now()->endOfDay();
+        // The trend covers the page's window; `period` only decides how it is
+        // bucketed. It used to default to its own four-month range, which no
+        // other report on the page shared.
+        [$start, $end] = $startDate || $endDate
+            ? $this->resolveRange($startDate, $endDate, $period)
+            : [Carbon::now()->subMonths(3)->startOfMonth(), Carbon::now()->endOfDay()];
 
         return match ($period) {
             'daily'   => $this->getDailyReport($salesRepId, $start, $end),
@@ -67,9 +67,15 @@ class ReportService
                 $visitsQuery->where('sales_rep_id', $salesRepId);
             }
 
+            $target = $this->getTargetForRange($salesRepId, $dayStart, $dayEnd);
+
             $items[] = [
                 'label'            => $current->format('d M'),
-                'targetAmount'     => $this->getTargetForRange($salesRepId, $dayStart, $dayEnd),
+                'targetAmount'     => $target,
+                /* A bucket with no target is not a bucket at 0% — nobody set
+                   one. Without this flag the page totals months that have a
+                   target with months that do not, and reports 270%. */
+                'hasTarget'        => $target > 0,
                 'achievedAmount'   => (float) (clone $ordersQuery)->sum('total'),
                 'ordersCount'      => (clone $ordersQuery)->count(),
                 'outletVisits'     => (clone $visitsQuery)->count(),
@@ -119,9 +125,12 @@ class ReportService
                 $visitsQuery->where('sales_rep_id', $salesRepId);
             }
 
+            $target = $this->getTargetForRange($salesRepId, $weekStart, $weekEnd);
+
             $items[] = [
                 'label'            => 'W' . $weekStart->format('W') . ' ' . $weekStart->format('M'),
-                'targetAmount'     => $this->getTargetForRange($salesRepId, $weekStart, $weekEnd),
+                'targetAmount'     => $target,
+                'hasTarget'        => $target > 0,
                 'achievedAmount'   => (float) (clone $ordersQuery)->sum('total'),
                 'ordersCount'      => (clone $ordersQuery)->count(),
                 'outletVisits'     => (clone $visitsQuery)->count(),
@@ -167,9 +176,12 @@ class ReportService
                 $visitsQuery->where('sales_rep_id', $salesRepId);
             }
 
+            $target = $this->getTargetForRange($salesRepId, $monthStart, $monthEnd);
+
             $items[] = [
                 'label'            => $current->format('M Y'),
-                'targetAmount'     => $this->getTargetForRange($salesRepId, $monthStart, $monthEnd),
+                'targetAmount'     => $target,
+                'hasTarget'        => $target > 0,
                 'achievedAmount'   => (float) (clone $ordersQuery)->sum('total'),
                 'ordersCount'      => (clone $ordersQuery)->count(),
                 'outletVisits'     => (clone $visitsQuery)->count(),
@@ -192,31 +204,7 @@ class ReportService
         ?string $endDate
     ): array {
 
-        $now = Carbon::now();
-
-        // Default range using period
-        if ($startDate && $endDate) {
-            $start = Carbon::parse($startDate)->startOfDay();
-            $end   = Carbon::parse($endDate)->endOfDay();
-        } else {
-            switch ($period) {
-                case 'daily':
-                    $start = $now->copy()->startOfDay();
-                    $end   = $now->copy()->endOfDay();
-                    break;
-
-                case 'weekly':
-                    $start = $now->copy()->startOfWeek();
-                    $end   = $now->copy()->endOfWeek();
-                    break;
-
-                case 'monthly':
-                default:
-                    $start = $now->copy()->startOfMonth();
-                    $end   = $now->copy()->endOfMonth();
-                    break;
-            }
-        }
+        [$start, $end] = $this->resolveRange($startDate, $endDate, $period);
 
         $salesReps = User::role('sales_representative', 'web')
             ->where('status', 'active')
@@ -236,6 +224,8 @@ class ReportService
                 $sales = (float) (clone $ordersQuery)->sum('total');
 
                 $target = $this->getTargetForRange($sr->id, $start, $end);
+                $orders = (clone $ordersQuery)->count();
+                $money  = $this->collectionFor(clone $ordersQuery);
 
                 return [
                     'salesRepId'         => $sr->id,
@@ -245,7 +235,17 @@ class ReportService
                     'achievedPercentage' => $target > 0
                         ? round(($sales / $target) * 100, 2)
                         : 0,
-                    'ordersCount'        => (clone $ordersQuery)->count(),
+                    /* Without this the panel cannot tell "missed the target"
+                       from "no target was ever set", and prints 0% for both. */
+                    'hasTarget'          => $target > 0,
+                    'ordersCount'        => $orders,
+
+                    // What the orders are actually worth in cash so far.
+                    'collectedAmount'    => $money['collected'],
+                    'outstandingAmount'  => $money['outstanding'],
+
+                    'avgOrderValue'      => $orders > 0 ? round($sales / $orders, 2) : 0,
+                    'outletsServed'      => (clone $ordersQuery)->distinct()->count('customer_id'),
 
                     'outletVisits' => OutletVisit::where('sales_rep_id', $sr->id)
                         ->whereBetween('visited_at', [$start, $end])
@@ -267,32 +267,7 @@ class ReportService
 
     public function getAreaReport(?int $salesRepId, string $period, ?string $startDate, ?string $endDate): array
     {
-        $now = Carbon::now();
-
-        // Default range using period
-        if ($startDate && $endDate) {
-
-            $start = Carbon::parse($startDate)->startOfDay();
-            $end   = Carbon::parse($endDate)->endOfDay();
-        } else {
-            switch ($period) {
-                case 'daily':
-                    $start = $now->copy()->startOfDay();
-                    $end   = $now->copy()->endOfDay();
-                    break;
-
-                case 'weekly':
-                    $start = $now->copy()->startOfWeek();
-                    $end   = $now->copy()->endOfWeek();
-                    break;
-
-                case 'monthly':
-                default:
-                    $start = $now->copy()->startOfMonth();
-                    $end   = $now->copy()->endOfMonth();
-                    break;
-            }
-        }
+        [$start, $end] = $this->resolveRange($startDate, $endDate, $period);
 
         $areas = OutletVisit::query()
             ->whereBetween('visited_at', [$start, $end])
@@ -304,7 +279,7 @@ class ReportService
             ->groupBy('area')
             ->get();
 
-        return $areas
+        $rows = $areas
             ->map(function ($areaData) use ($start, $end, $salesRepId) {
 
                 $ordersQuery = Order::query()
@@ -314,19 +289,39 @@ class ReportService
                             $q->where('created_by_id', $salesRepId);
                         });
                     })
-                    ->whereBetween('created_at', [$start, $end])
-                    ->where('status', '!=', 'cancelled');
+                    ->whereBetween('orders.created_at', [$start, $end])
+                    ->where('orders.status', '!=', 'cancelled');
+
+                $sales  = (float) (clone $ordersQuery)->sum('total');
+                $orders = (clone $ordersQuery)->count();
+                $money  = $this->collectionFor(clone $ordersQuery);
 
                 return [
-                    'area'         => $areaData->area,
-                    'totalSales'   => (float) (clone $ordersQuery)->sum('total'),
-                    'ordersCount'  => (clone $ordersQuery)->count(),
-                    'activeSRs'    => (int) $areaData->active_srs,
-                    'outletCount'  => (int) $areaData->outlet_count,
+                    'area'              => $areaData->area,
+                    'totalSales'        => $sales,
+                    'ordersCount'       => $orders,
+                    'activeSRs'         => (int) $areaData->active_srs,
+                    'outletCount'       => (int) $areaData->outlet_count,
+                    'collectedAmount'   => $money['collected'],
+                    'outstandingAmount' => $money['outstanding'],
+                    'avgOrderValue'     => $orders > 0 ? round($sales / $orders, 2) : 0,
                 ];
             })
             ->sortByDesc('totalSales')
-            ->values()
+            ->values();
+
+        // The share of the window's sales, so a bar can be drawn without the
+        // panel having to total the rows itself and disagree.
+        $grandTotal = (float) $rows->sum('totalSales');
+
+        return $rows
+            ->map(function ($row) use ($grandTotal) {
+                $row['revenueShare'] = $grandTotal > 0
+                    ? round(($row['totalSales'] / $grandTotal) * 100, 2)
+                    : 0;
+
+                return $row;
+            })
             ->toArray();
     }
 
@@ -334,25 +329,25 @@ class ReportService
     // COMPANY REPORT
     // ══════════════════════════════════════════════════════════════════════
 
-    public function getCompanyReport(?string $startDate, ?string $endDate): array
-    {
-        $start = $startDate
-            ? Carbon::parse($startDate)->startOfDay()
-            : Carbon::now()->startOfMonth();
-
-        $end = $endDate
-            ? Carbon::parse($endDate)->endOfDay()
-            : Carbon::now()->endOfDay();
+    public function getCompanyReport(
+        ?string $startDate,
+        ?string $endDate,
+        ?int $salesRepId = null,
+        string $period = 'monthly'
+    ): array {
+        [$start, $end] = $this->resolveRange($startDate, $endDate, $period);
 
         $companyData = DB::table('order_items')
             ->join('orders', 'orders.id', '=', 'order_items.order_id')
             ->join('products', 'products.id', '=', 'order_items.product_id')
             ->whereBetween('orders.created_at', [$start, $end])
             ->where('orders.status', '!=', 'cancelled')
+            ->when($salesRepId, fn ($q) => $q->where('orders.sales_rep_id', $salesRepId))
             ->selectRaw('
                 products.company as company_name,
                 SUM(order_items.total) as totalSales,
-                COUNT(DISTINCT orders.id) as ordersCount
+                COUNT(DISTINCT orders.id) as ordersCount,
+                SUM(order_items.quantity) as unitsSold
             ')
             ->groupBy('products.company')
             ->orderByDesc('totalSales')
@@ -364,9 +359,10 @@ class ReportService
             ->map(function ($row) use ($grandTotal) {
 
                 return [
-                    'companyName'  => $row->company_name ?? 'Unknown',
+                    'companyName'  => $row->company_name ?: 'Unbranded',
                     'totalSales'   => (float) $row->totalSales,
                     'ordersCount'  => (int) $row->ordersCount,
+                    'unitsSold'    => (int) $row->unitsSold,
                     'revenueShare' => $grandTotal > 0
                         ? round(($row->totalSales / $grandTotal) * 100, 2)
                         : 0,
@@ -379,6 +375,75 @@ class ReportService
     // ══════════════════════════════════════════════════════════════════════
     // HELPERS
     // ══════════════════════════════════════════════════════════════════════
+
+    /**
+     * The window every report on the page measures.
+     *
+     * There was no shared resolver, so the four endpoints each invented their
+     * own default and the Sales Report page showed three ranges at once under
+     * one set of summary cards:
+     *
+     *   getSalesReport      no dates  → now()->subMonths(3) .. now()   (4 months)
+     *   getSalesRepReport   period    → startOfMonth .. endOfMonth     (whole month)
+     *   getAreaReport       period    → startOfMonth .. endOfMonth
+     *
+     * which is how the header read 270% (four months of sales against the one
+     * and a bit months that had a target set) directly above a table of 15%
+     * and 0%. It also meant October's target was 375,949 in the chart and
+     * 888,607 in the table: month-to-date against the full month.
+     *
+     * A lone startDate used to be ignored entirely, because the branch
+     * required both — so the panel sent `startDate=1 Jan` and silently got
+     * the current month.
+     */
+    private function resolveRange(?string $startDate, ?string $endDate, string $period): array
+    {
+        $now = Carbon::now();
+
+        if ($startDate || $endDate) {
+            return [
+                $startDate ? Carbon::parse($startDate)->startOfDay() : $now->copy()->startOfYear(),
+                $endDate ? Carbon::parse($endDate)->endOfDay() : $now->copy()->endOfDay(),
+            ];
+        }
+
+        return match ($period) {
+            'daily'  => [$now->copy()->startOfDay(), $now->copy()->endOfDay()],
+            'weekly' => [$now->copy()->startOfWeek(Carbon::SATURDAY), $now->copy()->endOfDay()],
+            // Month to date, not the whole month: a target for days that have
+            // not happened yet is not a shortfall.
+            default  => [$now->copy()->startOfMonth(), $now->copy()->endOfDay()],
+        };
+    }
+
+    /**
+     * What has been collected against a set of orders, and what is still owed.
+     *
+     * Approved and awaiting-approval payments are cash the shop handed over;
+     * a rejected payment is not. Mirrors App\Support\PaymentLedger, which is
+     * the single definition — a report that disagrees with the order screen is
+     * worse than no report.
+     */
+    private function collectionFor($ordersQuery): array
+    {
+        $orderIds = (clone $ordersQuery)->pluck('orders.id');
+
+        if ($orderIds->isEmpty()) {
+            return ['collected' => 0.0, 'outstanding' => 0.0];
+        }
+
+        $collected = (float) DB::table('payments')
+            ->whereIn('order_id', $orderIds)
+            ->whereIn('status', array_merge(PaymentLedger::APPROVED, PaymentLedger::AWAITING))
+            ->sum('amount_paid');
+
+        $billed = (float) (clone $ordersQuery)->sum('total');
+
+        return [
+            'collected'   => round($collected, 2),
+            'outstanding' => round(max(0, $billed - $collected), 2),
+        ];
+    }
 
     private function getTargetForRange(
         ?int $salesRepId,

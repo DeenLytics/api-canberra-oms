@@ -72,6 +72,8 @@ class ReportController extends Controller
         $data = $this->reportService->getCompanyReport(
             $request->startDate,
             $request->endDate,
+            $request->salesRepId,
+            $request->input('period', 'monthly'),
         );
 
         return response()->json($data);
