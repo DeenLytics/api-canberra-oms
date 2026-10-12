@@ -64,16 +64,34 @@ class ReportController extends Controller
         return response()->json($data);
     }
 
-    // GET /api/reports/companies
-    public function companies(Request $request): JsonResponse
+    /**
+     * GET /api/reports/categories
+     *
+     * Was /companies, grouping by `products.company` — a column that does not
+     * exist, so the endpoint threw a 500 on every call and the panel's tab had
+     * been commented out instead of fixed.
+     */
+    public function categories(Request $request): JsonResponse
     {
-        // $this->authorize('viewReports');
-
-        $data = $this->reportService->getCompanyReport(
+        $data = $this->reportService->getCategoryReport(
             $request->startDate,
             $request->endDate,
             $request->salesRepId,
             $request->input('period', 'monthly'),
+        );
+
+        return response()->json($data);
+    }
+
+    // GET /api/reports/products — the lines that move, biggest first
+    public function products(Request $request): JsonResponse
+    {
+        $data = $this->reportService->getProductReport(
+            $request->startDate,
+            $request->endDate,
+            $request->salesRepId,
+            $request->input('period', 'monthly'),
+            (int) $request->input('limit', 25),
         );
 
         return response()->json($data);

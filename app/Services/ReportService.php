@@ -329,7 +329,17 @@ class ReportService
     // COMPANY REPORT
     // ══════════════════════════════════════════════════════════════════════
 
-    public function getCompanyReport(
+    /**
+     * What sold, by category and by product.
+     *
+     * This replaces getCompanyReport, which grouped by `products.company`.
+     * There is no such column — products carry a category_id and nothing else
+     * — so the endpoint threw a 500 on every call, and the panel's "By
+     * Company" tab had been commented out rather than fixed. A distributor's
+     * question is which lines move, so the answer is the two groupings the
+     * schema can actually give: category and product.
+     */
+    public function getCategoryReport(
         ?string $startDate,
         ?string $endDate,
         ?int $salesRepId = null,
@@ -337,36 +347,88 @@ class ReportService
     ): array {
         [$start, $end] = $this->resolveRange($startDate, $endDate, $period);
 
-        $companyData = DB::table('order_items')
+        $rows = DB::table('order_items')
             ->join('orders', 'orders.id', '=', 'order_items.order_id')
             ->join('products', 'products.id', '=', 'order_items.product_id')
+            ->leftJoin('categories', 'categories.id', '=', 'products.category_id')
             ->whereBetween('orders.created_at', [$start, $end])
             ->where('orders.status', '!=', 'cancelled')
             ->when($salesRepId, fn ($q) => $q->where('orders.sales_rep_id', $salesRepId))
             ->selectRaw('
-                products.company as company_name,
+                COALESCE(categories.name, "Uncategorised") as group_name,
+                SUM(order_items.total) as totalSales,
+                COUNT(DISTINCT orders.id) as ordersCount,
+                COUNT(DISTINCT products.id) as productCount,
+                SUM(order_items.quantity) as unitsSold
+            ')
+            ->groupBy('group_name')
+            ->orderByDesc('totalSales')
+            ->get();
+
+        return $this->withShare($rows, fn ($row) => [
+            'name'         => $row->group_name,
+            'totalSales'   => (float) $row->totalSales,
+            'ordersCount'  => (int) $row->ordersCount,
+            'unitsSold'    => (int) $row->unitsSold,
+            'productCount' => (int) $row->productCount,
+        ]);
+    }
+
+    public function getProductReport(
+        ?string $startDate,
+        ?string $endDate,
+        ?int $salesRepId = null,
+        string $period = 'monthly',
+        int $limit = 25
+    ): array {
+        [$start, $end] = $this->resolveRange($startDate, $endDate, $period);
+
+        $rows = DB::table('order_items')
+            ->join('orders', 'orders.id', '=', 'order_items.order_id')
+            ->leftJoin('products', 'products.id', '=', 'order_items.product_id')
+            ->leftJoin('categories', 'categories.id', '=', 'products.category_id')
+            ->whereBetween('orders.created_at', [$start, $end])
+            ->where('orders.status', '!=', 'cancelled')
+            ->when($salesRepId, fn ($q) => $q->where('orders.sales_rep_id', $salesRepId))
+            ->selectRaw('
+                /* product_name is denormalised onto the line, so a product that
+                   has since been renamed or deleted still reports under the name
+                   it was sold as. */
+                COALESCE(products.name, order_items.product_name) as group_name,
+                COALESCE(categories.name, "Uncategorised") as category_name,
                 SUM(order_items.total) as totalSales,
                 COUNT(DISTINCT orders.id) as ordersCount,
                 SUM(order_items.quantity) as unitsSold
             ')
-            ->groupBy('products.company')
+            ->groupBy('group_name', 'category_name')
             ->orderByDesc('totalSales')
+            ->limit($limit)
             ->get();
 
-        $grandTotal = (float) $companyData->sum('totalSales');
+        return $this->withShare($rows, fn ($row) => [
+            'name'        => $row->group_name,
+            'category'    => $row->category_name,
+            'totalSales'  => (float) $row->totalSales,
+            'ordersCount' => (int) $row->ordersCount,
+            'unitsSold'   => (int) $row->unitsSold,
+        ]);
+    }
 
-        return $companyData
-            ->map(function ($row) use ($grandTotal) {
+    /** Each row's share of the set, so the panel does not have to total the
+     *  rows itself and end up disagreeing with them. */
+    private function withShare($rows, callable $shape): array
+    {
+        $grandTotal = (float) $rows->sum('totalSales');
 
-                return [
-                    'companyName'  => $row->company_name ?: 'Unbranded',
-                    'totalSales'   => (float) $row->totalSales,
-                    'ordersCount'  => (int) $row->ordersCount,
-                    'unitsSold'    => (int) $row->unitsSold,
-                    'revenueShare' => $grandTotal > 0
-                        ? round(($row->totalSales / $grandTotal) * 100, 2)
-                        : 0,
-                ];
+        return $rows
+            ->map(function ($row) use ($shape, $grandTotal) {
+                $out = $shape($row);
+
+                $out['revenueShare'] = $grandTotal > 0
+                    ? round(($out['totalSales'] / $grandTotal) * 100, 2)
+                    : 0;
+
+                return $out;
             })
             ->values()
             ->toArray();

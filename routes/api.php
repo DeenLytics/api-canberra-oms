@@ -237,15 +237,25 @@ Route::prefix('v1')->group(function () {
         // ── Reports (Admin only) ──────────────────────────────────────────────
 
         Route::prefix('reports')->group(function () {
-            // GET /api/reports/sales             → period-wise bar chart data
-            // GET /api/reports/sales-reps        → SR-wise summary table
-            // GET /api/reports/areas             → area-wise sales
-            // GET /api/reports/companies         → company/brand-wise sales
+            // GET /api/reports/sales        → the trend, bucketed by period
+            // GET /api/reports/sales-reps   → per rep: target, sales, collection
+            // GET /api/reports/areas        → per area
+            // GET /api/reports/categories   → per product category
+            // GET /api/reports/products     → the lines that move, biggest first
+            //
+            // All five take the same startDate/endDate/salesRepId, so the page
+            // can put one window across every tab.
 
             Route::get('sales',      [ReportController::class, 'sales']);
             Route::get('sales-reps', [ReportController::class, 'salesReps']);
             Route::get('areas',      [ReportController::class, 'areas']);
-            Route::get('companies',  [ReportController::class, 'companies']);
+            Route::get('categories', [ReportController::class, 'categories']);
+            Route::get('products',   [ReportController::class, 'products']);
+
+            /* Was /companies, grouped by a column that does not exist. Kept
+             * pointing at the category report so an older panel build does not
+             * 404 mid-deploy. */
+            Route::get('companies',  [ReportController::class, 'categories']);
         });
 
     });
