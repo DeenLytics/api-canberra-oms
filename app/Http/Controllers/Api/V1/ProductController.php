@@ -53,6 +53,24 @@ class ProductController extends Controller
      *     )
      * )
      */
+    /**
+     * Drop the cached catalogues.
+     *
+     * Both list endpoints are `Cache::remember(…, now()->addDays(1))` and
+     * nothing ever invalidated them. So a price change, a new product, a stock
+     * correction or an MRP took up to twenty-four hours to reach a rep's
+     * phone — and the admin's own grid is served from the same cache, so the
+     * person who made the edit could not see it either.
+     *
+     * Called from every write below. The keys are listed here rather than at
+     * each call site so a third list cannot be added and quietly forgotten.
+     */
+    private function forgetCachedCatalogue(): void
+    {
+        Cache::forget('products');    // GET /products      — the admin grid
+        Cache::forget('productList'); // GET /product-lists — the SR app
+    }
+
     public function index()
     {
         if (Cache::has('products')) {
@@ -130,6 +148,8 @@ class ProductController extends Controller
             ]);
 
             $product = Product::create($productData);
+
+            $this->forgetCachedCatalogue();
 
             return ResponseHelper::success(new ProductResource($product), 'Product created successfully', 201);
 
@@ -225,6 +245,8 @@ class ProductController extends Controller
 
             $product->update($productData);
 
+            $this->forgetCachedCatalogue();
+
             return ResponseHelper::success(new ProductResource($product), 'Product updated successfully');
 
         } catch (\Exception $e) {
@@ -256,6 +278,9 @@ class ProductController extends Controller
         if (!$product) return ResponseHelper::error('Product not found', 404);
 
         $product->delete();
+
+        $this->forgetCachedCatalogue();
+
         return ResponseHelper::success('Product deleted successfully');
     }
 }
