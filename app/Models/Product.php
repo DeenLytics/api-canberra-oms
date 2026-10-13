@@ -18,7 +18,11 @@ class Product extends Model
         'short_description',
         'description',
         'purchase_price',
+        // The trade price: what the outlet pays us.
         'sale_price',
+        // The retail price printed on the pack: what the shopper pays. A rep is
+        // asked this at the counter, so it has to be on screen.
+        'mrp',
         'stock',
         'slug',
         'category_id',

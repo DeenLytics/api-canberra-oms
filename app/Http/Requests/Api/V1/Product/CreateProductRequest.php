@@ -27,6 +27,9 @@ class CreateProductRequest extends FormRequest
             'shortDescription' => 'nullable|string',
             'purchasePrice' => 'nullable|numeric|min:0',
             'salePrice' => 'nullable|numeric|min:0',
+            // Retail price on the pack. Not required: the catalogue predates
+            // the field and an invented MRP is worse than a blank one.
+            'mrp' => 'nullable|numeric|min:0',
             'stock' => 'nullable|integer|min:0',
             'categoryId' => 'nullable|integer|exists:categories,id',
             'status' => 'nullable|in:active,inactive',

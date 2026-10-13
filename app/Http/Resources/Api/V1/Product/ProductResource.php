@@ -25,7 +25,12 @@ class ProductResource extends JsonResource
             'shortDescription' => $this->short_description,
             'description' => $this->description,
             'purchasePrice' => round((float) $this->purchase_price,2),
+            // The trade price: what the outlet pays us.
             'salePrice' => round((float) $this->sale_price,2),
+            /* The retail price printed on the pack. Null until somebody
+             * records it — the screens say "not set" rather than showing a
+             * confident 0 next to a real trade price. */
+            'mrp' => $this->mrp !== null ? round((float) $this->mrp, 2) : null,
             'stock' => (int) $this->stock,
             'slug' => $this->slug,
             'category' => new CategoryResource($this->category),
