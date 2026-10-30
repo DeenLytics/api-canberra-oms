@@ -30,6 +30,7 @@ class TargetController extends Controller
         }
 
         $targets = $query->get()->map(function ($t) {
+            $t->salesRepId      = $t->sales_rep_id;
             $t->salesRepName    = $t->salesRep?->full_name;
             $t->achievedAmount   = $t->achieved_amount;
             $t->achievedPercentage = $t->achieved_percentage;
