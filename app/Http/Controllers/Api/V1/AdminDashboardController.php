@@ -16,6 +16,7 @@ use App\Models\{
     Category,
     SalesRepresentative,
 };
+use App\Support\PaymentLedger;
 use Illuminate\Support\Facades\DB;
 use Carbon\Carbon;
 
@@ -38,26 +39,30 @@ class AdminDashboardController extends Controller
         $delivered     = Order::where('status', 'delivered')->count();
         $readyToShip   = Order::where('status', 'ready_to_ship')->count();
         $todayOrders   = Order::whereDate('created_at', $today)->count();
-        $todaySales   = Order::whereDate('created_at', $today)->sum('total');
+        $todaySales   = Order::whereDate('created_at', $today)->where('status', '!=', 'cancelled')->sum('total');
 
         // Last month orders
         $totalOrdersLastMonth = Order::whereBetween('created_at', [$startLastMonth, $endLastMonth])->count();
+        $totalOrdersThisMonth = Order::whereBetween('created_at', [$startOfMonth, $endOfMonth])->count();
+        // This month against last, not all-time against last month.
         $ordersChange = $totalOrdersLastMonth > 0
-            ? round((($totalOrders - $totalOrdersLastMonth) / $totalOrdersLastMonth) * 100, 2)
+            ? round((($totalOrdersThisMonth - $totalOrdersLastMonth) / $totalOrdersLastMonth) * 100, 2)
             : 0;
 
         // -------------------------
         // Sales Summary
         // ---
-        $currentMonthSales = Order::whereMonth('created_at', now()->month)
+        // A cancelled order was never a sale.
+        $currentMonthSales = Order::where('status', '!=', 'cancelled')->whereMonth('created_at', now()->month)
         ->whereYear('created_at', now()->year)
         ->sum('total');
 
-        $lastMonthSales = Order::whereMonth('created_at', now()->subMonth()->month)
+        $lastMonthSales = Order::where('status', '!=', 'cancelled')->whereMonth('created_at', now()->subMonth()->month)
         ->whereYear('created_at', now()->subMonth()->year)
         ->sum('total');
 
         $monthlySales = Order::selectRaw('MONTHNAME(created_at) as month_name, SUM(total) as sales')
+        ->where('status', '!=', 'cancelled')
         ->whereYear('created_at', now()->year)
         ->groupBy('month_name')
         ->orderByRaw('MIN(created_at)')
@@ -84,23 +89,30 @@ class AdminDashboardController extends Controller
         // -------------------------
         // Payments
         // -------------------------
-        $totalIncome = DB::table('payments')->sum('amount_paid');
+        // Income is approved money only; a payment awaiting approval is not
+        // revenue yet, and a rejected one never was. Cash collected (below)
+        // counts what reps hold, approved or not, but never a rejected row.
+        $approved  = fn () => DB::table('payments')->whereIn('status', PaymentLedger::APPROVED);
+        $collected = fn () => DB::table('payments')->whereNotIn('status', PaymentLedger::REJECTED);
 
-        $totalIncomeThisMonth = DB::table('payments')
+        $totalIncome = $approved()->sum('amount_paid');
+
+        $totalIncomeThisMonth = $approved()
             ->whereBetween('created_at', [$startOfMonth, $endOfMonth])
             ->sum('amount_paid');
 
         // Last month income for comparison
-        $totalIncomeLastMonth = DB::table('payments')
+        $totalIncomeLastMonth = $approved()
             ->whereBetween('created_at', [$startLastMonth, $endLastMonth])
             ->sum('amount_paid');
 
+        // This month against last, not all-time against last month.
         $incomeChange = $totalIncomeLastMonth > 0
-            ? round((($totalIncome - $totalIncomeLastMonth) / $totalIncomeLastMonth) * 100, 2)
+            ? round((($totalIncomeThisMonth - $totalIncomeLastMonth) / $totalIncomeLastMonth) * 100, 2)
             : 0;
 
         // Payment collected today
-        $paymentCollectedToday = DB::table('payments')
+        $paymentCollectedToday = $collected()
             ->whereDate('created_at', $today)
             ->sum('amount_paid');
 
@@ -110,7 +122,7 @@ class AdminDashboardController extends Controller
         )
             ->from('invoices as i')
             ->leftJoin(
-                DB::raw('(SELECT invoice_id, SUM(amount_paid) as total_paid FROM payments GROUP BY invoice_id) as p'),
+                DB::raw('(SELECT invoice_id, SUM(amount_paid) as total_paid FROM payments WHERE status <> \'failed\' GROUP BY invoice_id) as p'),
                 'i.id',
                 '=',
                 'p.invoice_id'
@@ -128,7 +140,7 @@ class AdminDashboardController extends Controller
         // -------------------------
         $pendingCollectionsOrders = Invoice::select('id')
             ->leftJoin(
-                DB::raw('(SELECT invoice_id, SUM(amount_paid) as total_paid FROM payments GROUP BY invoice_id) as p'),
+                DB::raw('(SELECT invoice_id, SUM(amount_paid) as total_paid FROM payments WHERE status <> \'failed\' GROUP BY invoice_id) as p'),
                 'invoices.id',
                 '=',
                 'p.invoice_id'
@@ -139,7 +151,7 @@ class AdminDashboardController extends Controller
         // -------------------------
         // Payment Collected Today Orders
         // -------------------------
-        $paymentCollectedTodayOrders = DB::table('payments')
+        $paymentCollectedTodayOrders = $collected()
             ->whereDate('created_at', $today)
             ->distinct('invoice_id')
             ->count('invoice_id');
