@@ -197,8 +197,14 @@ class PaymentLedger
 
         $invoice = $order->invoice ?: $order->invoice()->first();
 
-        if ($invoice && $invoice->status !== $ledger['paymentStatus']) {
-            $invoice->status = $ledger['paymentStatus'];
+        // invoices.status has no `pending`: an invoice nothing has been
+        // collected against is `unpaid`. Writing `pending` is rejected by a
+        // strict-mode MySQL, which turned rejecting an order's only payment
+        // into a 500.
+        $invoiceStatus = $ledger['paymentStatus'] === 'pending' ? 'unpaid' : $ledger['paymentStatus'];
+
+        if ($invoice && $invoice->status !== $invoiceStatus) {
+            $invoice->status = $invoiceStatus;
             $invoice->save();
         }
 
