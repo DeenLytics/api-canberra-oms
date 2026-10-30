@@ -36,7 +36,7 @@ class SalesRepresentativeController extends Controller
 
     public function index()
     {
-        $salesRepresentatives = User::with('salesRepresentative')->orderBy('id', 'desc')->get();
+        $salesRepresentatives = User::role('sales_representative')->with('salesRepresentative')->orderBy('id', 'desc')->get();
         return ResponseHelper::success(SalesRepresentativeCollectionResource::collection($salesRepresentatives), 'Categories retrieved successfully');
     }
 
