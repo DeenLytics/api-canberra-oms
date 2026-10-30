@@ -2,17 +2,23 @@
 
 namespace Tests\Feature;
 
+use App\Models\Customer;
 use App\Models\Invoice;
 use App\Models\Order;
 use App\Models\Payment;
 use App\Support\PaymentLedger;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Tests\Concerns\MakesRecords;
 use Tests\TestCase;
 
 class PaymentLedgerTest extends TestCase
 {
-    use RefreshDatabase, MakesRecords;
+    use RefreshDatabase;
+
+    private function customer(): Customer
+    {
+        return Customer::create(['name' => 'Test Outlet', 'shop_name' => 'Test Shop',
+            'mobile_number' => '01700000001', 'address' => 'Dhaka', 'status' => 'active']);
+    }
 
     private function invoicedOrder(): Order
     {
