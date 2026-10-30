@@ -71,8 +71,51 @@ class SRDashboardController extends Controller
             'total_orders'         => $totalOrders,
             'today_orders'         => $totalTodayOrders,
             'pending_orders'       => $pendingOrders,
+            'periods'              => $this->periods($salesRepId),
         ];
 
         return ResponseHelper::success($data, 'Today Sales Summary for Sales Representative');
+    }
+
+    /**
+     * Sales and order count for today, this week and this month so far, each
+     * against the same stretch of the period before it, so a Tuesday morning is
+     * not measured against the whole of last week. Weeks start where
+     * TargetService starts them, so these line up with the target card.
+     */
+    private function periods(int $salesRepId): array
+    {
+        $now = Carbon::now();
+        $periods = [];
+
+        foreach ([
+            'daily'   => [$now->copy()->startOfDay(),   $now->copy()->subDay()->startOfDay()],
+            'weekly'  => [$now->copy()->startOfWeek(),  $now->copy()->subWeek()->startOfWeek()],
+            'monthly' => [$now->copy()->startOfMonth(), $now->copy()->subMonthNoOverflow()->startOfMonth()],
+        ] as $period => [$start, $prevStart]) {
+            $prevEnd = $prevStart->copy()->addSeconds((int) $start->diffInSeconds($now))->min($start);
+
+            [$sales, $orders] = $this->salesBetween($salesRepId, $start, $now);
+            [$prevSales]      = $this->salesBetween($salesRepId, $prevStart, $prevEnd);
+
+            $periods[$period] = [
+                'sales'  => round($sales, 2),
+                'orders' => $orders,
+                'change' => $prevSales > 0 ? round(($sales - $prevSales) / $prevSales * 100, 1) : null,
+            ];
+        }
+
+        return $periods;
+    }
+
+    private function salesBetween(int $salesRepId, Carbon $start, Carbon $end): array
+    {
+        $row = Order::where('sales_rep_id', $salesRepId)
+            ->where('status', '!=', 'cancelled')
+            ->whereBetween('created_at', [$start, $end])
+            ->selectRaw('COALESCE(SUM(total), 0) as sales, COUNT(*) as orders')
+            ->first();
+
+        return [(float) $row->sales, (int) $row->orders];
     }
 }
