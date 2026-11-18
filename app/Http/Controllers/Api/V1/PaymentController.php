@@ -154,8 +154,24 @@ class PaymentController extends Controller
         try {
             $before = PaymentLedger::for($order);
 
-            DB::transaction(function () use ($payment, $data, $order) {
+            DB::transaction(function () use ($payment, $data, $order, $request) {
                 $payment->status = $data['status'];
+
+                /* Who decided, and when. `created_by` already holds the rep who
+                   collected the cash; without this pair the one control this
+                   queue exists to provide — that the two are different people —
+                   could not be checked after the fact.
+
+                   Sending a payment back to 'pending' clears them: an undecided
+                   payment has no decider. */
+                if ($data['status'] === 'pending') {
+                    $payment->approved_by = null;
+                    $payment->approved_at = null;
+                } else {
+                    $payment->approved_by = $request->user()?->id;
+                    $payment->approved_at = now();
+                }
+
                 $payment->save();
 
                 // A decision that does not reach the order's books is not a
@@ -164,7 +180,9 @@ class PaymentController extends Controller
                 PaymentLedger::sync($order->refresh());
             });
 
-            $order->load(['customer', 'salesRep', 'items.product:id,thumbnail', 'discounts', 'invoice.payments']);
+            $order->load(['customer', 'salesRep', 'items.product:id,thumbnail', 'discounts',
+                          // so the response names who collected and who just signed off
+                          'invoice.payments.createdBy:id,full_name', 'invoice.payments.approvedBy:id,full_name']);
 
             $after = PaymentLedger::for($order);
 
@@ -204,15 +222,23 @@ class PaymentController extends Controller
         ]);
 
         try {
-            $result = DB::transaction(function () use ($data) {
+            $approver = $request->user()?->id;
+
+            $result = DB::transaction(function () use ($data, $approver) {
                 // Which orders the decision touches, read before the update.
                 $orderIds = Payment::whereIn('id', $data['ids'])
                     ->distinct()
                     ->pluck('order_id');
 
+                $decided = $data['status'] !== 'pending';
+
                 $updated = Payment::whereIn('id', $data['ids'])->update([
-                    'status'     => $data['status'],
-                    'updated_at' => now(),
+                    'status'      => $data['status'],
+                    // The same record a single decision writes. A batch of 500
+                    // sign-offs that leaves no trace is not an audit trail.
+                    'approved_by' => $decided ? $approver : null,
+                    'approved_at' => $decided ? now() : null,
+                    'updated_at'  => now(),
                 ]);
 
                 /* Every order the batch touched has to have its books rewritten,

@@ -20,15 +20,37 @@ class Payment extends Model
         'ref',
         'payment_date',
         'created_by',
+        'approved_by',
+        'approved_at',
         'status',
     ];
 
     /** The user who recorded this payment — the rep who collected the cash.
      *  The approval queue shows it, and it is what makes "somebody else signs
      *  it off" checkable. */
+    protected $casts = [
+        'approved_at' => 'datetime',
+    ];
+
     public function createdBy()
     {
         return $this->belongsTo(User::class, 'created_by');
+    }
+
+    /** The administrator who decided this payment — approved it or refused it.
+     *  Null while it is still waiting. */
+    public function approvedBy()
+    {
+        return $this->belongsTo(User::class, 'approved_by');
+    }
+
+    /** The control the approval queue exists to provide: the person who took
+     *  the money must not be the person who confirmed it. */
+    public function isSelfApproved(): bool
+    {
+        return $this->created_by !== null
+            && $this->approved_by !== null
+            && $this->created_by === $this->approved_by;
     }
 
     protected static function boot()

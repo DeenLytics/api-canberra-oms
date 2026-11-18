@@ -353,6 +353,7 @@ class OrderController extends Controller
             ->with(['customer', 'salesRep', 'items.product:id,thumbnail',
                     // the approval queue reads who collected each payment
                     'invoice.payments.createdBy:id,full_name',
+                    'invoice.payments.approvedBy:id,full_name',
                     /* The ledger and the discount total are computed per row in
                      * the resource. Without these two the list fired a query
                      * per order for each of them. */
