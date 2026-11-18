@@ -119,8 +119,22 @@ class PaymentController extends Controller
     {
         $user = $request->user();
 
-        if (! $user || ! $user->hasAnyRole(['super_admin', 'admin'])) {
-            return ResponseHelper::error('Only an administrator can approve a payment.', 403);
+        /* The permission, not the role.
+         *
+         * This asked for `hasAnyRole(['super_admin', 'admin'])`, which was
+         * wrong — and wrong against this system's own data. The permissions
+         * table already draws the line: `super_admin` holds view/create/edit/
+         * delete payment, and `admin` holds no payment permission at all, not
+         * even `view payment`. Checking the role name bypassed that table and
+         * handed every admin a power the installation had explicitly withheld
+         * from them.
+         *
+         * Reading the permission instead means the answer lives in one place
+         * and can be changed without a deploy: grant `edit payment` to a role
+         * or to one person, and they can sign payments off.
+         */
+        if (! $user || ! $user->can('edit payment')) {
+            return ResponseHelper::error('You do not have permission to approve a payment.', 403);
         }
 
         return null;

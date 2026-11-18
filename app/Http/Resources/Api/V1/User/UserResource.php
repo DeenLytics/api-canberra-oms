@@ -22,7 +22,13 @@ class UserResource extends JsonResource
             "avatar"=> $this->avatar ? asset($this->avatar): "",
             "email"=> $this->email,
             "last_login_at"=> $this->last_login_at,
-            'roles' => $this->getRoleNames()
+            'roles' => $this->getRoleNames(),
+            /* The panel has to gate buttons on the same thing the API gates
+               the endpoint on. It only had role names, so it guessed from the
+               role and guessed differently — offering an Approve button that
+               came back 403. getAllPermissions covers both the ones inherited
+               from a role and any granted to the person directly. */
+            'permissions' => $this->getAllPermissions()->pluck('name'),
         ];
     }
 }
